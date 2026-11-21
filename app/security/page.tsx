@@ -9,8 +9,26 @@ export default function Security() {
   const toast = useToast();
   const [r, setR] = useState<any>(null); const [n, setN] = useState(1); const [msg, setMsg] = useState(""); const [scan, setScan] = useState(false); const [busy, setBusy] = useState(false); const key = useRef(""); const sc = useRef<any>(null); const method = useRef("qr");
   async function verify(body: object) { setMsg(""); setBusy(true); try { const x = await fetch("/api/security/verify", { method: "POST", body: JSON.stringify(body) }); if (!x.ok) throw 0; const j = await x.json(); key.current = crypto.randomUUID(); setR(j); setN(1); } catch { setMsg(navigator.onLine ? "Verification failed. Try again." : "No connection. Verification can’t be completed offline."); } setBusy(false); }
-  useEffect(() => { if (!scan) return; let live = true; (async () => { const { Html5Qrcode } = await import("html5-qrcode"); const q = new Html5Qrcode("reader"); sc.current = q;
-    try { await q.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, (t) => { const tok = t.split("/invitation/")[1]; if (tok && live) { live = false; method.current = "qr"; q.stop().catch(() => {}); setScan(false); verify({ token: tok }); } }, () => {}); } catch { setMsg("Camera unavailable. Allow camera access or enter the code."); setScan(false); } })(); return () => { live = false; sc.current?.stop?.().catch(() => {}); }; }, [scan]);
+  useEffect(() => {
+    if (!scan) return;
+    let cancelled = false, done = false; let q: any = null; let started: Promise<unknown> = Promise.resolve();
+    // accepts the full invitation URL (any host) or a bare token
+    const tokenFrom = (t: string) => { const m = t.trim().match(/\/invitation\/([A-Za-z0-9_-]+)/); return m ? m[1] : /^[A-Za-z0-9_-]{20,}$/.test(t.trim()) ? t.trim() : null; };
+    (async () => {
+      const { Html5Qrcode } = await import("html5-qrcode");
+      if (cancelled) return; // effect re-ran (Strict Mode) or scan closed before the library loaded
+      q = new Html5Qrcode("reader"); sc.current = q;
+      started = q.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, (t: string) => {
+        if (done) return;
+        const tok = tokenFrom(t);
+        if (!tok) { setMsg("That QR code is not a wedding invitation."); return; }
+        done = true; method.current = "qr"; setScan(false); verify({ token: tok }); // cleanup stops the camera
+      }, () => {}).catch(() => { if (!cancelled) { setMsg("Camera unavailable. Allow camera access (needs HTTPS) or enter the code."); setScan(false); } });
+      await started;
+      if (cancelled) q.stop().catch(() => {}); // cleanup ran while the camera was still starting
+    })();
+    return () => { cancelled = true; if (q) started.then(() => q.stop()).catch(() => {}); };
+  }, [scan]);
  async function admit() {
   setBusy(true);
   const x = await fetch("/api/security/checkin", { method: "POST", body: JSON.stringify({ invitationId: r.invitationId, count: n, key: key.current, method: method.current }) }).catch(() => null);
